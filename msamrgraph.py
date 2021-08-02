@@ -17,20 +17,20 @@ def get_amr_dict(unsplit_amr3_location):
     '''
     Load a dictionary of all the AMR ids. 
     '''
-    amr_dictionary = {}
+    amrid2amr = {}
     for each_file in pathlib.Path(unsplit_amr3_location).iterdir():
-        for each_amr in each_file.read_text().split("\n\n"):
-
+        for each_amr in each_file.read_text().replace(u'\x85',' ').split("\n\n"):
             if "AMR release" in each_amr:
                 continue
             try:
                 file = penman.decode(each_amr)
             except DecodeError:
-                logging.error("Failed to parse an AMR:\n"+str(each_amr))
+                logging.error("Penman failed to parse an AMR:\n"+str(each_amr))
+                print([each_amr])
                 continue
             amr_id = file.metadata['id']
-            amr_dictionary[amr_id] = file
-    return amr_dictionary
+            amrid2amr[amr_id] = file
+    return amrid2amr
 
 class MSAMRGraph:
     '''
@@ -45,18 +45,25 @@ class MSAMRGraph:
         self.bridge_links = bridging_links
         self.DEFAULT_ROOT = 'u99'
         self.name = name
-    def generate_graph(self):
-        
+
+    def rename_with_clusterid(self, variable):
+        if variable in self.clusters:
+            return self.clusters[variable]
+        return variable
+    def generate_graph(self, redundancy="redundant"):
+        '''
+        Genderate document graph
+        '''
 
         all_links = [(self.DEFAULT_ROOT, Role(":instance"),"utterance")] #+ self.bridge_links
         raw_text = []
         for sentence_id, amr in enumerate(self.list_of_amr_ids):
             raw_text.append(self.amr_dict[amr].metadata['snt'])
             all_variables = self.amr_dict[amr].variables()
-            tp = "s"+str(sentence_id)+self.amr_dict[amr].top
-            if tp in self.clusters:
-                tp = self.clusters[tp]
-            all_links.append((self.DEFAULT_ROOT, Role(":snt"+str(sentence_id+1)),Variable(tp)))
+            top_variable = "s"+str(sentence_id)+self.amr_dict[amr].top
+            
+            top_variable = self.rename_with_clusterid(top_variable)
+            all_links.append((self.DEFAULT_ROOT, Role(":snt"+str(sentence_id+1)),Variable(top_variable)))
             for tr in self.amr_dict[amr].instances():
                 source = "s"+str(sentence_id)+str(tr.source)
                 impl_stack = []
@@ -92,15 +99,23 @@ class MSAMRGraph:
         final_links = []
         instance_variables_seen = []
         for triple in all_links:
+            is_redundant =False
             if triple in final_links:
-                pass
+                candidate = (triple[0], ":additional-type", triple[2])
+                is_redundant =True
             elif triple[1] == ":instance" and triple[0] in instance_variables_seen:
-                final_links.append((triple[0], ":additional-type", triple[2]))
+                candidate = (triple[0], ":additional-type", triple[2])
+                if candidate in final_links:
+                    is_redundant=True
             elif triple[1] == ":instance":
                 instance_variables_seen.append(triple[0])
-                final_links.append(triple)
+                candidate = triple
             else:
-                final_links.append(triple)
+                candidate = triple
+            if redundancy == 'unique' and is_redundant:
+                pass
+            else:
+                final_links.append(candidate)
         test = penman.graph.Graph(triples=final_links, top=self.DEFAULT_ROOT)
         test.metadata['snt'] = " ".join(raw_text)
         test.metadata['id'] = self.name
